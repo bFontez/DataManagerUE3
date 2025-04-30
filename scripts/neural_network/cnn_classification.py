@@ -30,11 +30,13 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from scipy.sparse import spmatrix
 
+
+
 # ==============================================================================
 # CONFIGURABLE PARAMETERS
 # ==============================================================================
 # Number of training epochs
-N_EPOCHS = 150
+N_EPOCHS = 15
 # Random seed for reproducibility
 RANDOM_SEED = 42
 # Batch size for training
@@ -59,125 +61,27 @@ sys.path.insert(0, str(project_root))
 
 from scripts.dataLoading import data_3cl, spectral_cols
 from src.data_augmenter import DataAugmenter, AugmentationParams
-
-
-@dataclass
-class TrainingMetrics:
-    """Class to store training metrics at each epoch"""
-
-    epoch: int
-    train_loss: float
-    val_loss: float
-    epoch_time: float = 0.0  # Epoch execution time in seconds
-
-
-def plot_training_metrics(
-    metrics_list: List[TrainingMetrics],
-    title: str = "Metrics Evolution",
-    save_path: str | None = None,
-) -> None:
-    """
-    Displays the evolution of training metrics across epochs
-
-    Args:
-        metrics_list: List of TrainingMetrics objects containing metrics for each epoch
-        title: Chart title
-        save_path: Path to save the chart (None = no saving)
-    """
-    epochs = [m.epoch for m in metrics_list]
-    train_losses = [m.train_loss for m in metrics_list]
-    val_losses = [m.val_loss for m in metrics_list]
-    epoch_times = [m.epoch_time for m in metrics_list]
-
-    # Create a figure with two subplots
-    fig, (ax1, ax2) = plt.subplots(
-        2, 1, figsize=(10, 12), gridspec_kw={"height_ratios": [2, 1]}
-    )
-
-    # First subplot: training and validation losses
-    ax1.plot(epochs, train_losses, label="Training Loss", color="blue", marker="o")
-    ax1.plot(epochs, val_losses, label="Validation Loss", color="red", marker="x")
-    ax1.set_title(title)
-    ax1.set_xlabel("Epoch")
-    ax1.set_ylabel("Loss")
-    ax1.grid(True, linestyle="--", alpha=0.7)
-    ax1.legend()
-
-    # Second subplot: training time per epoch
-    ax2.bar(epochs, epoch_times, color="green", alpha=0.7)
-    ax2.set_title("Training Time per Epoch")
-    ax2.set_xlabel("Epoch")
-    ax2.set_ylabel("Time (seconds)")
-    ax2.grid(True, linestyle="--", alpha=0.7)
-
-    # Total and average training time
-    total_time = sum(epoch_times)
-    avg_time = total_time / len(epoch_times) if epoch_times else 0
-    ax2.text(
-        0.02,
-        0.95,
-        f"Total time: {total_time:.2f}s\nAverage time: {avg_time:.2f}s/epoch",
-        transform=ax2.transAxes,
-        bbox=dict(facecolor="white", alpha=0.8),
-    )
-
-    # Appearance improvement
-    plt.tight_layout()
-
-    # Save if requested
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
-
-    plt.show()
-
-
-def print_classification_metrics(
-    y_true: np.ndarray, y_pred: np.ndarray, set_name: str = "test"
-) -> None:
-    """
-    Print standard classification metrics
-
-    Args:
-        y_true: Actual class labels
-        y_pred: Model predicted class labels
-        set_name: Name of the dataset for reporting (e.g., 'train', 'test')
-    """
-    # Calculate accuracy
-    accuracy = accuracy_score(y_true, y_pred)
-    print(f"\nAccuracy on {set_name} set: {accuracy:.4f}")
-
-    # Calculate precision, recall, and F1 score (macro avg for multiclass)
-    precision = precision_score(y_true, y_pred, average="macro")
-    recall = recall_score(y_true, y_pred, average="macro")
-    f1 = f1_score(y_true, y_pred, average="macro")
-
-    print(f"Precision on {set_name} set: {precision:.4f}")
-    print(f"Recall on {set_name} set: {recall:.4f}")
-    print(f"F1 score on {set_name} set: {f1:.4f}")
-
-    # Generate and print classification report
-    print("\nClassification Report:")
-    cls_report = classification_report(y_true, y_pred, digits=4)
-    print(cls_report)
-
-    # Get confusion matrix
-    cm = confusion_matrix(y_true, y_pred)
-
-    # Plot confusion matrix
-    plt.figure(figsize=(8, 6))
-    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
-    plt.title(f"Confusion Matrix ({set_name} set)")
-    plt.ylabel("True Label")
-    plt.xlabel("Predicted Label")
-    plt.tight_layout()
-    plt.show()
-
-
+from src.metrics import (
+    ClassificationMetrics,
+    print_classification_metrics,
+    plot_classification_metrics_sequence,
+)
 # Custom Dataset class for our spectral data
 class SpectralDataset(Dataset):
     """Dataset class to handle spectral data for PyTorch"""
 
-    def __init__(self, X: np.ndarray | spmatrix, y: np.ndarray | spmatrix):
+    def __init__(self, X: np.ndarray, y: np.ndarray):
+        """Initialize dataset with spectral data and labels.
+        
+        Args:
+            X: Input features as numpy array
+            y: Target labels as numpy array
+        """
+        if not isinstance(X, np.ndarray):
+            X = np.array(X)
+        if not isinstance(y, np.ndarray):
+            y = np.array(y)
+            
         # Reshape X for CNN input: [batch_size, channels, sequence_length]
         # For spectral data, we use 1 channel
         self.X = torch.FloatTensor(X).unsqueeze(1)  # Add channel dimension
@@ -331,6 +235,11 @@ X_val_cls = scaler_X_cls.transform(X_val_cls)
 X_test_cls = scaler_X_cls.transform(X_test_cls)
 
 # Create datasets and loaders for training and validation only
+X_train_cls = np.array(X_train_cls)
+y_train_cls = np.array(y_train_cls)
+X_val_cls = np.array(X_val_cls)
+y_val_cls = np.array(y_val_cls)
+
 train_dataset = SpectralDataset(X_train_cls, y_train_cls)
 val_dataset = SpectralDataset(X_val_cls, y_val_cls)
 
@@ -347,7 +256,7 @@ best_val_loss = float("inf")
 best_model_state = None
 
 # List to store training metrics
-metrics_history: List[TrainingMetrics] = []
+metrics_history: List[ClassificationMetrics] = []
 
 print("Starting CNN training for classification without augmentation...")
 total_training_start = time.time()
@@ -372,22 +281,27 @@ for epoch in range(N_EPOCHS):
         # Accumulate the batch loss
         train_loss += loss.item()
 
-    # Validation phase
+    # Validation mode
     model.eval()
-    # Initialize the total validation loss for this epoch
     val_loss = 0.0
-    # Disable gradient computation for validation
-    with torch.no_grad():
-        # Iterate over mini-batches of validation data
-        for X_batch, y_batch in val_loader:
-            # Forward pass only
-            outputs = model(X_batch)
-            # Accumulate the validation loss
-            val_loss += criterion(outputs, y_batch).item()
+    val_correct = 0
+    val_total = 0
 
-    # Calculate average losses
+    with torch.no_grad():
+        for X_batch, y_batch in val_loader:
+            outputs = model(X_batch)
+            loss = criterion(outputs, y_batch)
+            val_loss += loss.item()
+
+            # Calculate validation accuracy
+            _, predicted = torch.max(outputs.data, 1)
+            val_total += y_batch.size(0)
+            val_correct += (predicted == y_batch).sum().item()
+
+    # Calculate average losses and accuracy
     avg_train_loss = train_loss / len(train_loader)
     avg_val_loss = val_loss / len(val_loader)
+    val_accuracy = 100 * val_correct / val_total if val_total > 0 else 0.0
 
     # Calculate epoch execution time
     epoch_end = time.time()
@@ -395,10 +309,11 @@ for epoch in range(N_EPOCHS):
 
     # Store metrics for each epoch
     metrics_history.append(
-        TrainingMetrics(
+        ClassificationMetrics(
             epoch=epoch + 1,
             train_loss=avg_train_loss,
             val_loss=avg_val_loss,
+            val_accuracy=val_accuracy,
             epoch_time=epoch_time,
         )
     )
@@ -444,7 +359,7 @@ with torch.no_grad():
 print_classification_metrics(test_targets, test_predictions, "test")
 
 # Visualize the evolution of metrics
-plot_training_metrics(
+plot_classification_metrics_sequence(
     metrics_history,
     title="Evolution of Training Metrics for CNN Classification (Without Augmentation)",
     save_path=str(project_root) + "/plots/training_metrics_cnn_classification.png",
@@ -506,6 +421,11 @@ X_val_cls = scaler_X_cls.transform(X_val_cls)
 X_test_cls = scaler_X_cls.transform(X_test_cls)
 
 # Create datasets and loaders for training and validation only
+X_train_cls = np.array(X_train_cls)
+y_train_cls = np.array(y_train_cls)
+X_val_cls = np.array(X_val_cls)
+y_val_cls = np.array(y_val_cls)
+
 train_dataset = SpectralDataset(X_train_cls, y_train_cls)
 val_dataset = SpectralDataset(X_val_cls, y_val_cls)
 
@@ -522,7 +442,7 @@ best_val_loss = float("inf")
 best_model_state = None
 
 # List to store training metrics
-metrics_history: List[TrainingMetrics] = []
+metrics_history_aug: List[ClassificationMetrics] = []
 
 print("Starting CNN training for classification with augmentation...")
 total_training_start = time.time()
@@ -547,33 +467,39 @@ for epoch in range(N_EPOCHS):
         # Accumulate the batch loss
         train_loss += loss.item()
 
-    # Validation phase
+    # Validation mode
     model_aug.eval()
-    # Initialize the total validation loss for this epoch
     val_loss = 0.0
-    # Disable gradient computation for validation
-    with torch.no_grad():
-        # Iterate over mini-batches of validation data
-        for X_batch, y_batch in val_loader:
-            # Forward pass only
-            outputs = model_aug(X_batch)
-            # Accumulate the validation loss
-            val_loss += criterion(outputs, y_batch).item()
+    val_correct = 0
+    val_total = 0
 
-    # Calculate average losses
+    with torch.no_grad():
+        for X_batch, y_batch in val_loader:
+            outputs = model_aug(X_batch)
+            loss = criterion(outputs, y_batch)
+            val_loss += loss.item()
+
+            # Calculate validation accuracy
+            _, predicted = torch.max(outputs.data, 1)
+            val_total += y_batch.size(0)
+            val_correct += (predicted == y_batch).sum().item()
+
+    # Calculate average losses and accuracy
     avg_train_loss = train_loss / len(train_loader)
     avg_val_loss = val_loss / len(val_loader)
+    val_accuracy = 100 * val_correct / val_total if val_total > 0 else 0.0
 
     # Calculate epoch execution time
     epoch_end = time.time()
     epoch_time = epoch_end - epoch_start
 
     # Store metrics for each epoch
-    metrics_history.append(
-        TrainingMetrics(
+    metrics_history_aug.append(
+        ClassificationMetrics(
             epoch=epoch + 1,
             train_loss=avg_train_loss,
             val_loss=avg_val_loss,
+            val_accuracy=val_accuracy,
             epoch_time=epoch_time,
         )
     )
@@ -619,12 +545,9 @@ with torch.no_grad():
 print_classification_metrics(test_targets, test_predictions, "test")
 
 # Visualize the evolution of metrics
-plot_training_metrics(
-    metrics_history,
-    title="Evolution of Training Metrics for CNN Classification (With Augmentation)",
-    save_path=str(project_root)
-    + "/plots/training_metrics_cnn_classification_augmented.png",
-)
+plot_classification_metrics_sequence(
+    metrics_history_aug,
+    title="Evolution of Training Metrics for CNN Classification (With Augmentation)")
 
 # Compare results between models
 print("\n" + "=" * 80)

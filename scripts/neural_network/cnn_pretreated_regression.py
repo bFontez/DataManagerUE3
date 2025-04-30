@@ -19,6 +19,7 @@ from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional, Tuple
+import os
 
 import torch
 import torch.nn as nn
@@ -30,13 +31,13 @@ from scipy.sparse import spmatrix
 # CONFIGURABLE PARAMETERS
 # ==============================================================================
 # Number of training epochs
-N_EPOCHS = 150
+N_EPOCHS = 15
 # Random seed for reproducibility
 RANDOM_SEED = 42
 # Batch size for training
 BATCH_SIZE = 32
 # Learning rate for the optimizer
-LEARNING_RATE = 0.0001
+LEARNING_RATE = 0.001
 # Proportion of data for the test set
 TEST_SIZE = 0.25
 # Proportion of data for the validation set (relative to remaining data)
@@ -61,106 +62,16 @@ from scripts.dataLoading import (
     mat_deriv2_3cl,
 )
 from src.data_augmenter import DataAugmenter, AugmentationParams
+from src.metrics import (
+    RegressionMetrics,
+    plot_regression_metrics_sequence,
+    print_regression_metrics,
+    plot_regression_metrics,
+)
 
-
-@dataclass
-class TrainingMetrics:
-    """Class to store training metrics at each epoch"""
-
-    epoch: int
-    train_loss: float
-    val_loss: float
-    epoch_time: float = 0.0  # Epoch execution time in seconds
-
-
-def plot_training_metrics(
-    metrics_list: List[TrainingMetrics],
-    title: str = "Metrics Evolution",
-    save_path: Optional[str] = None,
-) -> None:
-    """
-    Displays the evolution of training metrics across epochs
-
-    Args:
-        metrics_list: List of TrainingMetrics objects containing metrics for each epoch
-        title: Chart title
-        save_path: Path to save the chart (None = no saving)
-    """
-    epochs = [m.epoch for m in metrics_list]
-    train_losses = [m.train_loss for m in metrics_list]
-    val_losses = [m.val_loss for m in metrics_list]
-    epoch_times = [m.epoch_time for m in metrics_list]
-
-    # Create a figure with two subplots
-    fig, (ax1, ax2) = plt.subplots(
-        2, 1, figsize=(10, 12), gridspec_kw={"height_ratios": [2, 1]}
-    )
-
-    # First subplot: training and validation losses
-    ax1.plot(epochs, train_losses, label="Training Loss", color="blue", marker="o")
-    ax1.plot(epochs, val_losses, label="Validation Loss", color="red", marker="x")
-    ax1.set_title(title)
-    ax1.set_xlabel("Epoch")
-    ax1.set_ylabel("Loss")
-    ax1.grid(True, linestyle="--", alpha=0.7)
-    ax1.legend()
-
-    # Second subplot: training time per epoch
-    ax2.bar(epochs, epoch_times, color="green", alpha=0.7)
-    ax2.set_title("Training Time per Epoch")
-    ax2.set_xlabel("Epoch")
-    ax2.set_ylabel("Time (seconds)")
-    ax2.grid(True, linestyle="--", alpha=0.7)
-
-    # Total and average training time
-    total_time = sum(epoch_times)
-    avg_time = total_time / len(epoch_times) if epoch_times else 0
-    ax2.text(
-        0.02,
-        0.95,
-        f"Total time: {total_time:.2f}s\nAverage time: {avg_time:.2f}s/epoch",
-        transform=ax2.transAxes,
-        bbox=dict(facecolor="white", alpha=0.8),
-    )
-
-    # Appearance improvement
-    plt.tight_layout()
-
-    # Save if requested
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
-
-    plt.show()
-
-
-def print_regression_metrics(
-    y_true: np.ndarray, y_pred: np.ndarray, set_name: str = "test"
-) -> None:
-    """
-    Print standard regression metrics
-
-    Args:
-        y_true: Actual values
-        y_pred: Model predictions
-        set_name: Name of the dataset for reporting (e.g., 'train', 'test')
-    """
-    # Calculate R² score
-    r2 = r2_score(y_true, y_pred)
-    print(f"\nR² score on {set_name} set: {r2:.4f}")
-
-    # Calculate MSE
-    mse = mean_squared_error(y_true, y_pred)
-    print(f"MSE on {set_name} set: {mse:.4f}")
-
-    # Calculate RMSE
-    rmse = np.sqrt(mse)
-    print(f"RMSE on {set_name} set: {rmse:.4f}")
-
-    # Calculate MAE
-    mae = mean_absolute_error(y_true, y_pred)
-    print(f"MAE on {set_name} set: {mae:.4f}")
-
-
+# Create directory for plots
+plots_dir = os.path.join(project_root, "plots")
+os.makedirs(plots_dir, exist_ok=True)
 # Custom Dataset class for spectral data with multiple transformations
 class MultiSpectralDataset(Dataset):
     """Dataset class to handle multiple spectral data transformations for PyTorch"""
@@ -455,43 +366,32 @@ best_val_loss = float("inf")
 best_model_state = None
 
 # List to store training metrics
-metrics_history: List[TrainingMetrics] = []
+metrics_history: List[RegressionMetrics] = []
 
 print("Starting CNN training for regression with preprocessing...")
 total_training_start = time.time()
 for epoch in range(N_EPOCHS):
     epoch_start = time.time()
-    # Set model to training mode
+    # Training mode
     model.train()
-    # Initialize the total training loss for this epoch
     train_loss = 0.0
-    # Iterate over mini-batches of training data
+
     for X_batch, y_batch in train_loader:
-        # Reset gradients to zero before computing new gradients
         optimizer.zero_grad()
-        # Forward pass: compute model predictions
         outputs = model(X_batch)
-        # Compute the loss between predictions and true values
         loss = criterion(outputs, y_batch)
-        # Backward pass: compute gradients of the loss
         loss.backward()
-        # Update model parameters using the optimizer
         optimizer.step()
-        # Accumulate the batch loss
         train_loss += loss.item()
 
-    # Validation phase
+    # Validation mode
     model.eval()
-    # Initialize the total validation loss for this epoch
     val_loss = 0.0
-    # Disable gradient computation for validation
     with torch.no_grad():
-        # Iterate over mini-batches of validation data
         for X_batch, y_batch in val_loader:
-            # Forward pass only
             outputs = model(X_batch)
-            # Compute and accumulate the validation loss
-            val_loss += criterion(outputs, y_batch).item()
+            loss = criterion(outputs, y_batch)
+            val_loss += loss.item()
 
     # Calculate average losses
     avg_train_loss = train_loss / len(train_loader)
@@ -503,7 +403,7 @@ for epoch in range(N_EPOCHS):
 
     # Store metrics for each epoch
     metrics_history.append(
-        TrainingMetrics(
+        RegressionMetrics(
             epoch=epoch + 1,
             train_loss=avg_train_loss,
             val_loss=avg_val_loss,
@@ -532,9 +432,14 @@ print(f"Average time per epoch: {total_training_time/N_EPOCHS:.2f} seconds")
 # Load the best model
 if best_model_state is not None:
     model.load_state_dict(best_model_state)
-    print(
-        f"Best model loaded with validation loss of {best_val_loss/len(val_loader):.4f}"
-    )
+    print(f"Best model loaded with validation loss of {best_val_loss:.4f}")
+
+# Display metrics evolution
+plot_regression_metrics_sequence(
+    metrics_history,
+    title="Evolution of Training Metrics for CNN Regression (Multiple Pretreated Inputs)",
+    save_path=os.path.join(plots_dir, "training_metrics_cnn_pretreated_regression.png"),
+)
 
 # Evaluation on test set
 model.eval()
@@ -546,11 +451,10 @@ with torch.no_grad():
         torch.FloatTensor(X_test_deriv1).unsqueeze(1),
         torch.FloatTensor(X_test_deriv2).unsqueeze(1),
     ]
-    test_targets = torch.FloatTensor(y_test_chl)
 
     # Get predictions for all test data at once
     test_predictions = model(test_inputs).detach().numpy()
-    test_targets = test_targets.detach().numpy()
+    test_targets = y_test_chl
 
 # Convert predictions back to original scale
 test_predictions = scaler_y_Chl.inverse_transform(test_predictions)
@@ -559,43 +463,19 @@ test_targets = scaler_y_Chl.inverse_transform(test_targets)
 # Print evaluation metrics
 print_regression_metrics(test_targets, test_predictions, "test")
 
-# Visualize the evolution of metrics
-plot_training_metrics(
-    metrics_history,
-    title="Evolution of Training Metrics for CNN Regression (Multiple Pretreated Inputs)",
-    save_path=str(project_root)
-    + "/plots/training_metrics_cnn_pretreated_regression.png",
-)
-
 # Visualize predictions vs actual values
-plt.figure(figsize=(10, 8))
-plt.scatter(test_targets, test_predictions, alpha=0.6)
-plt.plot(
-    [np.min(test_targets), np.max(test_targets)],
-    [np.min(test_targets), np.max(test_targets)],
-    "r--",
+plot_regression_metrics(
+    test_targets,
+    test_predictions,
+    title="CNN Regression with Multiple Pretreated Inputs: Predictions vs Actual Values",
+    save_path=os.path.join(plots_dir, "cnn_pretreated_regression_predictions.png"),
 )
-plt.xlabel("Actual Chl Values")
-plt.ylabel("Predicted Chl Values")
-plt.title(
-    f"CNN Regression with Multiple Pretreated Inputs: Predictions vs Actual Values\nR² = {r2_score(test_targets, test_predictions):.4f}"
-)
-plt.grid(True, linestyle="--", alpha=0.7)
-plt.tight_layout()
-plt.savefig(
-    str(project_root) + "/plots/cnn_pretreated_regression_predictions.png",
-    dpi=300,
-    bbox_inches="tight",
-)
-plt.show()
 
 # =============================================================================
 # CNN for regression with multiple pretreated spectral inputs and data augmentation
 # =============================================================================
 print("\n" + "=" * 80)
-print(
-    "CNN FOR REGRESSION (CHL PREDICTION) WITH MULTIPLE PRETREATED INPUTS AND DATA AUGMENTATION"
-)
+print("CNN FOR REGRESSION (CHL PREDICTION) WITH MULTIPLE PRETREATED INPUTS AND DATA AUGMENTATION")
 print("=" * 80)
 
 # Re-use the same train-test-validation split
@@ -713,45 +593,32 @@ best_val_loss = float("inf")
 best_model_state = None
 
 # List to store training metrics
-metrics_history: List[TrainingMetrics] = []
+metrics_history_aug: List[RegressionMetrics] = []
 
-print(
-    "Starting CNN training for regression with preprocessing and data augmentation..."
-)
+print("Starting CNN training for regression with preprocessing and data augmentation...")
 total_training_start = time.time()
 for epoch in range(N_EPOCHS):
     epoch_start = time.time()
-    # Set model to training mode
+    # Training mode
     model_aug.train()
-    # Initialize the total training loss for this epoch
     train_loss = 0.0
-    # Iterate over mini-batches of training data
+
     for X_batch, y_batch in train_loader:
-        # Reset gradients to zero before computing new gradients
         optimizer.zero_grad()
-        # Forward pass: compute model predictions
         outputs = model_aug(X_batch)
-        # Compute the loss between predictions and true values
         loss = criterion(outputs, y_batch)
-        # Backward pass: compute gradients of the loss
         loss.backward()
-        # Update model parameters using the optimizer
         optimizer.step()
-        # Accumulate the batch loss
         train_loss += loss.item()
 
-    # Validation phase
+    # Validation mode
     model_aug.eval()
-    # Initialize the total validation loss for this epoch
     val_loss = 0.0
-    # Disable gradient computation for validation
     with torch.no_grad():
-        # Iterate over mini-batches of validation data
         for X_batch, y_batch in val_loader:
-            # Forward pass only
             outputs = model_aug(X_batch)
-            # Compute and accumulate the validation loss
-            val_loss += criterion(outputs, y_batch).item()
+            loss = criterion(outputs, y_batch)
+            val_loss += loss.item()
 
     # Calculate average losses
     avg_train_loss = train_loss / len(train_loader)
@@ -762,8 +629,8 @@ for epoch in range(N_EPOCHS):
     epoch_time = epoch_end - epoch_start
 
     # Store metrics for each epoch
-    metrics_history.append(
-        TrainingMetrics(
+    metrics_history_aug.append(
+        RegressionMetrics(
             epoch=epoch + 1,
             train_loss=avg_train_loss,
             val_loss=avg_val_loss,
@@ -792,9 +659,14 @@ print(f"Average time per epoch: {total_training_time/N_EPOCHS:.2f} seconds")
 # Load the best model
 if best_model_state is not None:
     model_aug.load_state_dict(best_model_state)
-    print(
-        f"Best model loaded with validation loss of {best_val_loss/len(val_loader):.4f}"
-    )
+    print(f"Best model loaded with validation loss of {best_val_loss:.4f}")
+
+# Display metrics evolution
+plot_regression_metrics_sequence(
+    metrics_history_aug,
+    title="Evolution of Training Metrics for CNN Regression (Multiple Pretreated Inputs with Augmentation)",
+    save_path=os.path.join(plots_dir, "training_metrics_cnn_pretreated_regression_augmented.png"),
+)
 
 # Evaluation on test set
 model_aug.eval()
@@ -806,45 +678,22 @@ with torch.no_grad():
         torch.FloatTensor(X_test_deriv1).unsqueeze(1),
         torch.FloatTensor(X_test_deriv2).unsqueeze(1),
     ]
-    test_targets = torch.FloatTensor(y_test_chl)
 
     # Get predictions for all test data at once
     test_predictions = model_aug(test_inputs).detach().numpy()
-    test_targets = test_targets.detach().numpy()
+    test_targets = y_test_chl.detach().numpy()
 
 # Convert predictions back to original scale
-test_predictions = scaler_y_Chl_aug.inverse_transform(test_predictions)
-test_targets = scaler_y_Chl_aug.inverse_transform(test_targets)
+test_predictions = scaler_y_Chl.inverse_transform(test_predictions)
+test_targets = scaler_y_Chl.inverse_transform(test_targets)
 
 # Print evaluation metrics
 print_regression_metrics(test_targets, test_predictions, "test")
 
-# Visualize the evolution of metrics
-plot_training_metrics(
-    metrics_history,
-    title="Evolution of Training Metrics for CNN Regression (Multiple Pretreated Inputs with Augmentation)",
-    save_path=str(project_root)
-    + "/plots/training_metrics_cnn_pretreated_regression_augmented.png",
-)
-
 # Visualize predictions vs actual values
-plt.figure(figsize=(10, 8))
-plt.scatter(test_targets, test_predictions, alpha=0.6)
-plt.plot(
-    [np.min(test_targets), np.max(test_targets)],
-    [np.min(test_targets), np.max(test_targets)],
-    "r--",
+plot_regression_metrics(
+    test_targets,
+    test_predictions,
+    title="CNN Regression with Multiple Pretreated Inputs and Augmentation: Predictions vs Actual Values",
+    save_path=os.path.join(plots_dir, "cnn_pretreated_regression_augmented_predictions.png"),
 )
-plt.xlabel("Actual Chl Values")
-plt.ylabel("Predicted Chl Values")
-plt.title(
-    f"CNN Regression with Multiple Pretreated Inputs and Augmentation: Predictions vs Actual Values\nR² = {r2_score(test_targets, test_predictions):.4f}"
-)
-plt.grid(True, linestyle="--", alpha=0.7)
-plt.tight_layout()
-plt.savefig(
-    str(project_root) + "/plots/cnn_pretreated_regression_predictions_augmented.png",
-    dpi=300,
-    bbox_inches="tight",
-)
-plt.show()
